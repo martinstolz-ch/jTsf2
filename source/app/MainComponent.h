@@ -8,78 +8,292 @@
 
 #include "../common/cmakeVar.h"
 #include "../common/appConfig.h"
+#include "SF2Player.h"
 
 namespace aa {
 
 class MainComponent final
-    : public AudioAppComponent {
+    : public AudioAppComponent,
+      private Button::Listener,
+      private MidiKeyboardState::Listener,
+      private ComboBox::Listener {
 
 public:
     MainComponent() {
 
-        setSize(400, 200);
+        // load sf2 button
+        loadButton.setButtonText("Load SF2 File");
+        loadButton.addListener(this);
+        addAndMakeVisible(loadButton);
 
-        ///
+        // preset selector
+        presetCombo.setTextWhenNothingSelected("No presets available");
+        presetCombo.addListener(this);
+        presetCombo.setEnabled(false);
+        addAndMakeVisible(presetCombo);
 
-        // Some platforms require permissions to open input channels so request that here
-        if ( RuntimePermissions::isRequired (RuntimePermissions::recordAudio)
-             &&
-             ! RuntimePermissions::isGranted (RuntimePermissions::recordAudio)) {
+        // status label
+        statusLabel.setText("No SF2 file loaded", dontSendNotification);
+        statusLabel.setJustificationType(Justification::centred);
+        addAndMakeVisible(statusLabel);
 
-            RuntimePermissions::request (RuntimePermissions::recordAudio,
-                                               [&] (bool granted) {
-                                                   setAudioChannels (granted ? 2 : 0, 2);
-                                               }
+        // midi keyboard
+        keyboardState.reset();
+        keyboardState.addListener(this);
+        keyboard.setKeyWidth(40.0f);
+        keyboard.setLowestVisibleKey(36); // C2
+        addAndMakeVisible(keyboard);
 
-            );
-             } else {
+        setSize(800, 400);
 
-                 // Specify the number of input and output channels that we want to open
-                 setAudioChannels (2, 2);
-             }
+        // audio permissions
+        if (RuntimePermissions::isRequired(RuntimePermissions::recordAudio)
+            &&
+            !RuntimePermissions::isGranted(RuntimePermissions::recordAudio)) {
+
+            RuntimePermissions::request(RuntimePermissions::recordAudio,
+                                       [&](bool granted) {
+                                           setAudioChannels(granted ? 2 : 0, 2);
+                                       });
+        } else {
+            setAudioChannels(2, 2);
+        }
     }
 
     ~MainComponent() override {
+        presetCombo.removeListener(this);
+        keyboardState.removeListener(this);
         shutdownAudio();
     }
 
     void paint(Graphics& g) override {
+        g.fillAll(getLookAndFeel().findColour(ResizableWindow::backgroundColourId));
+
+        // company url unten
         g.setColour(app_config::MAIN_COLOUR);
-        g.setFont (FontOptions().withStyle ("light"));
+        g.setFont(FontOptions().withStyle("light"));
         g.drawFittedText(
-                cmakeVar::companyURL,
-                getLocalBounds(),
-                Justification::centredBottom,
-                1);
+            cmakeVar::companyURL,
+            getLocalBounds().removeFromBottom(30),
+            Justification::centredBottom,
+            1);
     }
 
-    void resized() override {}
+    void resized() override {
+        auto bounds = getLocalBounds();
+        bounds.reduce(20, 20);
 
-    /**
-     * Prepares the audio processor for play by setting up the necessary sample rate, block size,
-     * and performing any initialization required before audio playback or processing begins.
-     *
-     * @param sampleRate The sample rate at which the processor will operate, typically in Hz (e.g., 44100, 48000).
-     * @param samplesPerBlockExpected The number of samples per audio processing block. This value dictates the buffer size being processed at a time.
-     */
+        // load button oben
+        loadButton.setBounds(bounds.removeFromTop(40));
+        bounds.removeFromTop(10);
 
-    void prepareToPlay (int samplesPerBlockExpected, double sampleRate) override {
-        ignoreUnused(samplesPerBlockExpected, sampleRate); // avoid warning
-        // ...
+        // preset combo
+        presetCombo.setBounds(bounds.removeFromTop(30));
+        bounds.removeFromTop(10);
+
+        // status label
+        statusLabel.setBounds(bounds.removeFromTop(30));
+        bounds.removeFromTop(20);
+
+        // keyboard unten (reserviere platz für company url)
+        bounds.removeFromBottom(40);
+        keyboard.setBounds(bounds.removeFromBottom(120));
     }
 
-    void getNextAudioBlock (const AudioSourceChannelInfo& bufferToFill) override {
-        ignoreUnused(bufferToFill); // avoid warning
+    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
+        ignoreUnused(samplesPerBlockExpected);
+
+        currentSampleRate = sampleRate;
+        sf2Player.setSampleRate(sampleRate);
+
+        // clear pending midi messages
+        const ScopedLock lock{midiMessageLock};
+        pendingMidiMessages.clear();
+    }
+
+    void getNextAudioBlock(const AudioSourceChannelInfo& bufferToFill) override {
         bufferToFill.clearActiveBufferRegion();
+
+        if (!sf2Player.isLoaded()) {
+            return;
+        }
+
+        // process pending midi messages
+        {
+            const ScopedLock lock{midiMessageLock};
+
+            for (const auto metadata : pendingMidiMessages) {
+                auto message = metadata.getMessage();
+
+                if (message.isNoteOn()) {
+                    sf2Player.noteOn(0, message.getNoteNumber(), message.getVelocity());
+                }
+                else if (message.isNoteOff()) {
+                    sf2Player.noteOff(0, message.getNoteNumber());
+                }
+            }
+
+            pendingMidiMessages.clear();
+        }
+
+        // render audio from sf2
+        auto numSamples = bufferToFill.numSamples;
+        auto numChannels = bufferToFill.buffer->getNumChannels();
+
+        if (numChannels >= 2) {
+            // stereo output
+            tempBuffer.resize(numSamples * 2);
+            sf2Player.renderAudio(tempBuffer.data(), numSamples);
+
+            // copy to juce buffer (interleaved -> separate channels)
+            auto* leftChannel = bufferToFill.buffer->getWritePointer(0, bufferToFill.startSample);
+            auto* rightChannel = bufferToFill.buffer->getWritePointer(1, bufferToFill.startSample);
+
+            for (int i = 0; i < numSamples; ++i) {
+                leftChannel[i] = tempBuffer[i * 2];
+                rightChannel[i] = tempBuffer[i * 2 + 1];
+            }
+        }
+        else if (numChannels == 1) {
+            // mono output (mix L+R)
+            tempBuffer.resize(numSamples * 2);
+            sf2Player.renderAudio(tempBuffer.data(), numSamples);
+
+            auto* monoChannel = bufferToFill.buffer->getWritePointer(0, bufferToFill.startSample);
+
+            for (int i = 0; i < numSamples; ++i) {
+                monoChannel[i] = (tempBuffer[i * 2] + tempBuffer[i * 2 + 1]) * 0.5f;
+            }
+        }
     }
 
     void releaseResources() override {
-        // ...
+        // sf2 player cleanup happens in destructor
+    }
+
+    // MidiKeyboardState::Listener
+    void handleNoteOn(MidiKeyboardState* /*source*/, int /*midiChannel*/, int midiNoteNumber, float velocity) override {
+        const ScopedLock lock{midiMessageLock};
+        pendingMidiMessages.addEvent(MidiMessage::noteOn(1, midiNoteNumber, velocity), 0);
+    }
+
+    void handleNoteOff(MidiKeyboardState* /*source*/, int /*midiChannel*/, int midiNoteNumber, float /*velocity*/) override {
+        const ScopedLock lock{midiMessageLock};
+        pendingMidiMessages.addEvent(MidiMessage::noteOff(1, midiNoteNumber), 0);
     }
 
 private:
+    void buttonClicked(Button* button) override {
+        if (button == &loadButton) {
+            showFileChooser();
+        }
+    }
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR( MainComponent )
+    void comboBoxChanged(ComboBox* comboBox) override {
+        if (comboBox == &presetCombo) {
+            auto selectedPresetIndex = presetCombo.getSelectedItemIndex();
+            if (selectedPresetIndex >= 0 && sf2Player.isLoaded()) {
+                sf2Player.selectPreset(0, selectedPresetIndex); // channel 0 = MIDI channel 1
+
+                DBG("Selected preset " + String{selectedPresetIndex} + ": " +
+                    sf2Player.getPresetName(selectedPresetIndex));
+            }
+        }
+    }
+
+    void showFileChooser() {
+        chooser = std::make_unique<FileChooser>("Select SF2 file...",
+                                               File{},
+                                               "*.sf2");
+
+        auto chooserFlags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles;
+
+        chooser->launchAsync(chooserFlags, [this](const FileChooser& fc) {
+            auto file = fc.getResult();
+            if (file != File{}) {
+                loadSF2File(file);
+            }
+        });
+    }
+
+    void loadSF2File(const File& file) {
+        if (!file.existsAsFile()) {
+            statusLabel.setText("File not found!", dontSendNotification);
+            return;
+        }
+
+        bool success = sf2Player.loadSF2File(file);
+
+        if (success) {
+            // sample rate update falls bereits audio läuft
+            if (currentSampleRate > 0) {
+                sf2Player.setSampleRate(currentSampleRate);
+            }
+
+            // populate preset combo box
+            updatePresetCombo();
+
+            statusLabel.setText("Loaded: " + file.getFileName() +
+                              " (" + String{sf2Player.getPresetCount()} + " presets)",
+                              dontSendNotification);
+
+            DBG("SF2 file loaded successfully: " + file.getFullPathName());
+            DBG("Presets available: " + String{sf2Player.getPresetCount()});
+
+            if (sf2Player.getPresetCount() > 0) {
+                DBG("First preset: " + sf2Player.getPresetName(0));
+            }
+        }
+        else {
+            statusLabel.setText("Failed to load: " + file.getFileName(), dontSendNotification);
+            presetCombo.clear();
+            presetCombo.setEnabled(false);
+            DBG("Failed to load SF2 file: " + file.getFullPathName());
+        }
+    }
+
+    void updatePresetCombo() {
+        presetCombo.clear();
+
+        if (!sf2Player.isLoaded()) {
+            presetCombo.setEnabled(false);
+            return;
+        }
+
+        auto presetCount = sf2Player.getPresetCount();
+
+        for (int i = 0; i < presetCount; ++i) {
+            auto presetName = sf2Player.getPresetName(i);
+            presetCombo.addItem(String{i + 1} + ": " + presetName, i + 1);
+        }
+
+        if (presetCount > 0) {
+            presetCombo.setSelectedItemIndex(0); // select first preset
+            presetCombo.setEnabled(true);
+            sf2Player.selectPreset(0, 0); // select first preset on channel 0
+        }
+    }
+
+    // components
+    TextButton loadButton;
+    ComboBox presetCombo;
+    Label statusLabel;
+    MidiKeyboardState keyboardState;
+    MidiKeyboardComponent keyboard{keyboardState, MidiKeyboardComponent::horizontalKeyboard};
+
+    // sf2 engine
+    SF2Player sf2Player;
+
+    // audio
+    double currentSampleRate{0.0};
+    std::vector<float> tempBuffer;
+    MidiBuffer pendingMidiMessages;
+    CriticalSection midiMessageLock;
+
+    // file chooser
+    std::unique_ptr<FileChooser> chooser;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
 
 }
