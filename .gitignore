@@ -1,0 +1,8 @@
+# Project exclude paths
+/cmake-build-debug/
+
+# clion project
+/.idea/
+
+# cmake generated file
+/source/common/cmakeVar.h
