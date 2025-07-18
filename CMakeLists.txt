@@ -32,15 +32,15 @@ endif()
 
 
 # project config ################################
-project (AUDIO_APP VERSION 0.0.1)
+project (jTsf2 VERSION 0.0.1)
 set     (Target      ${PROJECT_NAME})
-set     (ProductName "Audio App")
+set     (ProductName "jTsf2")
 
 set (companyName "noizplay")
 set (companyURL "noizplay.com")
 
 unset  (USE_BOOST CACHE)
-option (USE_BOOST "Enable Boost libraries" ON)
+option (USE_BOOST "Enable Boost libraries" OFF)
 #################################################
 
 
