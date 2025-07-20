@@ -124,8 +124,15 @@ public:
     void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override {
         ignoreUnused(samplesPerBlockExpected);
 
-        currentSampleRate = sampleRate;
-        sf2Player.setSampleRate(sampleRate);
+        DBG("prepareToPlay called - Sample rate: " + String{sampleRate} + " Hz");
+
+        // update sample rate falls geändert
+        if (std::abs(currentSampleRate - sampleRate) > 0.1) {
+            currentSampleRate = sampleRate;
+            sf2Player.setSampleRate(sampleRate);
+
+            DBG("Sample rate changed to: " + String{sampleRate} + " Hz");
+        }
 
         // clear pending midi messages
         const ScopedLock lock{midiMessageLock};
