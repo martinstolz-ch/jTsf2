@@ -9,7 +9,7 @@
 
 // TinySoundFont 2 - header only implementation
 #define TSF_IMPLEMENTATION
-#include "tsf.h" // du musst tsf.h von https://github.com/schellingb/TinySoundFont downloaden
+#include "../external/tsf.h" // du musst tsf.h von https://github.com/schellingb/TinySoundFont downloaden
 
 namespace aa {
 
