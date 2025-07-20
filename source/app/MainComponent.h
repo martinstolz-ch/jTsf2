@@ -16,7 +16,8 @@ class MainComponent final
     : public AudioAppComponent,
       private Button::Listener,
       private MidiKeyboardState::Listener,
-      private ComboBox::Listener {
+      private ComboBox::Listener,
+      private Slider::Listener {
 
 public:
     MainComponent() {
@@ -31,6 +32,19 @@ public:
         presetCombo.addListener(this);
         presetCombo.setEnabled(false);
         addAndMakeVisible(presetCombo);
+
+        // tuning slider
+        tuningSlider.setSliderStyle(Slider::LinearHorizontal);
+        tuningSlider.setTextBoxStyle(Slider::TextBoxRight, false, 80, 20);
+        tuningSlider.setRange(436.0, 444.0, 0.1);
+        tuningSlider.setValue(440.0);
+        tuningSlider.setTextValueSuffix(" Hz");
+        tuningSlider.addListener(this);
+        addAndMakeVisible(tuningSlider);
+
+        tuningLabel.setText("Tuning:", dontSendNotification);
+        tuningLabel.attachToComponent(&tuningSlider, true);
+        addAndMakeVisible(tuningLabel);
 
         // status label
         statusLabel.setText("No SF2 file loaded", dontSendNotification);
@@ -61,6 +75,7 @@ public:
     }
 
     ~MainComponent() override {
+        tuningSlider.removeListener(this);
         presetCombo.removeListener(this);
         keyboardState.removeListener(this);
         shutdownAudio();
@@ -89,6 +104,12 @@ public:
 
         // preset combo
         presetCombo.setBounds(bounds.removeFromTop(30));
+        bounds.removeFromTop(10);
+
+        // tuning slider
+        auto tuningBounds = bounds.removeFromTop(30);
+        tuningBounds.removeFromLeft(60); // platz für label
+        tuningSlider.setBounds(tuningBounds);
         bounds.removeFromTop(10);
 
         // status label
@@ -201,6 +222,15 @@ private:
         }
     }
 
+    void sliderValueChanged(Slider* slider) override {
+        if (slider == &tuningSlider) {
+            auto tuningHz = static_cast<float>(tuningSlider.getValue());
+            sf2Player.setTuning(tuningHz);
+
+            DBG("Tuning changed to: " + String{tuningHz} + " Hz");
+        }
+    }
+
     void showFileChooser() {
         chooser = std::make_unique<FileChooser>("Select SF2 file...",
                                                File{},
@@ -229,6 +259,9 @@ private:
             if (currentSampleRate > 0) {
                 sf2Player.setSampleRate(currentSampleRate);
             }
+
+            // tuning auf aktuellen wert setzen
+            sf2Player.setTuning(static_cast<float>(tuningSlider.getValue()));
 
             // populate preset combo box
             updatePresetCombo();
@@ -277,6 +310,8 @@ private:
     // components
     TextButton loadButton;
     ComboBox presetCombo;
+    Slider tuningSlider;
+    Label tuningLabel;
     Label statusLabel;
     MidiKeyboardState keyboardState;
     MidiKeyboardComponent keyboard{keyboardState, MidiKeyboardComponent::horizontalKeyboard};
