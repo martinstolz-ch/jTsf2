@@ -12,13 +12,13 @@ set (CMAKE_CXX_EXTENSIONS ON) # ON: use "-std=gnu++20" / OFF: use "-std=c++20"
 # install vcpkg package manager in "~/Library/vcpkg"
 # (NOT in /opt/vcpkg -> will result in permission confusion!):
 #
-# cd ~/Library
-# git clone https://github.com/microsoft/vcpkg.git ~/Library/vcpkg
-# ~/Library/vcpkg/bootstrap-vcpkg.sh
+#     cd ~/Library
+#     git clone https://github.com/microsoft/vcpkg.git ~/Library/vcpkg
+#     ~/Library/vcpkg/bootstrap-vcpkg.sh
 #
 # add vcpkg folder to PATH in ~/.zshrc
 #
-# export PATH="$PATH:$HOME/Library/vcpkg"
+#     export PATH="$PATH:$HOME/Library/vcpkg"
 
 # setup the vcpkg toolchain for cmake
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
@@ -80,11 +80,13 @@ FetchContent_MakeAvailable(JUCE)
 
 # install required pack(s) for the 1st time:
 #
-# vcpkg install boost-spirit boost-fusion boost-core
+#     vcpkg install boost-spirit boost-fusion boost-core
+
 if (USE_BOOST)
     find_package (Boost REQUIRED CONFIG)
     message (STATUS "Boost version: ${Boost_VERSION}")
 endif ()
+
 
 # define JUCE app
 juce_add_gui_app (${Target}
@@ -130,7 +132,21 @@ target_compile_definitions ("${Target}"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:${Target},JUCE_VERSION>"
 )
 
+# download the tsf.h file
+message (STATUS "Download tsf.h from github")
+set(HEADER_URL "https://raw.githubusercontent.com/schellingb/TinySoundFont/main/tsf.h")
+set(HEADER_PATH "${CMAKE_BINARY_DIR}/source/external/tsf.h")
+
+if (NOT EXISTS ${HEADER_PATH})
+    file(DOWNLOAD ${HEADER_URL} ${HEADER_PATH})
+endif()
+
+target_include_directories(${Target} PRIVATE
+    "${CMAKE_BINARY_DIR}/source/external"
+)
+
 # create cmakeVars.h
+message (STATUS "Create cmakeVar.h")
 target_include_directories(${Target} PRIVATE "${CMAKE_BINARY_DIR}/source/common")
 get_target_property (COMPANY_WEBSITE ${Target} JUCE_COMPANY_WEBSITE)
 string (TIMESTAMP buildYear "%Y")
